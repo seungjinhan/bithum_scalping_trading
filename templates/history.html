@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>거래 히스토리</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1000px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        nav a { margin-right: 15px; text-decoration: none; color: #3498db; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <a href="/">모니터링</a>
+            <a href="/history">히스토리</a>
+        </nav>
+        <h1>거래 히스토리</h1>
+        <div class="card">
+            <table>
+                <tr><th>시간</th><th>마켓</th><th>방향</th><th>가격</th><th>알고리즘</th><th>모드</th></tr>
+                {% for t in history %}
+                <tr>
+                    <td>{{ t.time }}</td>
+                    <td>{{ t.market }}</td>
+                    <td>{{ t.side }}</td>
+                    <td>{{ t.price }}</td>
+                    <td>{{ t.algo }}</td>
+                    <td>{{ '페이퍼' if t.paper else '실거래' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">거래 내역이 없습니다.</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+</body>
+</html>
