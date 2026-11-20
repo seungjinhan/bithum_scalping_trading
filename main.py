@@ -1,12 +1,13 @@
-
-### 4. `main.py`
-```python
 import os
 import json
 import asyncio
-from datetime import datetime, timedelta
+import uuid
+import hashlib
+import jwt
+from datetime import datetime
 from typing import List, Dict
 from collections import deque
+from urllib.parse import urlencode
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,8 @@ templates = Jinja2Templates(directory="templates")
 # Config
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_API_KEY")
+BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY")
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 MARKET = os.getenv("MARKET", "KRW-SOL")
 
@@ -32,17 +35,35 @@ ALGORITHMS = {
     "rsi_extreme": {
         "name": "RSI Extreme Long",
         "description": "RSI(14) < 32 + 거래량 비율 > 1.3. 손절 0.25% / 익절 0.60%.",
-        "enabled": True
+        "enabled": True,
+        "backtest": {
+            "return": "0.25~0.38%",
+            "win_rate": "71~83%",
+            "trades": "6~7회",
+            "note": "가장 안정적"
+        }
     },
     "rsi_tight": {
         "name": "RSI Tight",
         "description": "RSI < 32 + 거래량 > 1.4",
-        "enabled": False
+        "enabled": False,
+        "backtest": {
+            "return": "0.50%",
+            "win_rate": "100%",
+            "trades": "4회",
+            "note": "샘플 적음"
+        }
     },
     "rsi_aggressive": {
         "name": "RSI Aggressive",
         "description": "RSI < 28 + 거래량 > 1.3",
-        "enabled": False
+        "enabled": False,
+        "backtest": {
+            "return": "0.27%",
+            "win_rate": "80%",
+            "trades": "5회",
+            "note": "SOL 양호"
+        }
     }
 }
 
@@ -50,7 +71,6 @@ trade_history: List[Dict] = []
 active_positions: Dict = {}
 enabled_algos: List[str] = ["rsi_extreme"]
 
-# WebSocket state
 price_history = deque(maxlen=50)
 volume_history = deque(maxlen=50)
 last_message_time = datetime.now()
@@ -66,6 +86,102 @@ def send_telegram(message: str):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+def create_jwt(query: dict = None):
+    """빗썸 JWT 생성 (수정 버전)"""
+    if not BITHUMB_ACCESS_KEY or not BITHUMB_SECRET_KEY:
+        return None
+    
+    payload = {
+        "access_key": BITHUMB_ACCESS_KEY,
+        "nonce": str(uuid.uuid4()),
+        "timestamp": int(datetime.now().timestamp() * 1000)
+    }
+    
+    if query:
+        query_string = urlencode(query, doseq=True).encode()
+        m = hashlib.sha512()
+        m.update(query_string)
+        payload["query_hash"] = m.hexdigest()
+        payload["query_hash_alg"] = "SHA512"
+    
+    return jwt.encode(payload, BITHUMB_SECRET_KEY, algorithm="HS256")
+
+def place_order(side: str, price: float, volume: float = 0.001):
+    """실제 주문 (PAPER_TRADING=false일 때만)"""
+    if PAPER_TRADING:
+        print(f"[PAPER] {side} {MARKET} @ {price}")
+        return {"status": "paper"}
+    
+    # 실제 주문 예시 (시장가)
+    query = {
+        "market": MARKET,
+        "side": side.lower(),
+        "ord_type": "price" if side == "BUY" else "market",
+        "price": str(int(price * volume)) if side == "BUY" else None,
+        "volume": str(volume) if side == "SELL" else None,
+    }
+    query = {k: v for k, v in query.items() if v is not None}
+    
+    token = create_jwt(query)
+    if not token:
+        return {"error": "API 키 없음"}
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = requests.post("https://api.bithumb.com/v1/orders", json=query, headers=headers, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def get_balance():
+    """KRW 사용 가능 잔고 조회"""
+    if PAPER_TRADING or not BITHUMB_ACCESS_KEY or not BITHUMB_SECRET_KEY:
+        return {"krw": 0, "available": 0, "mode": "paper"}
+    
+    token = create_jwt()
+    if not token:
+        return {"error": "JWT 생성 실패", "mode": "error"}
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        resp = requests.get(
+            "https://api.bithumb.com/v1/accounts",
+            headers=headers,
+            timeout=10
+        )
+        
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}: {resp.text[:300]}", "mode": "error"}
+        
+        data = resp.json()
+        
+        if isinstance(data, dict) and "error" in data:
+            return {"error": str(data["error"]), "mode": "error"}
+        
+        if not isinstance(data, list):
+            return {"error": f"응답 형식 오류: {str(data)[:200]}", "mode": "error"}
+        
+        krw_item = next((item for item in data if isinstance(item, dict) and item.get("currency") == "KRW"), None)
+        
+        if not krw_item:
+            return {"krw": 0, "available": 0, "mode": "live", "note": "KRW 잔고 없음"}
+        
+        balance = float(krw_item.get("balance", 0))
+        locked = float(krw_item.get("locked", 0))
+        
+        return {
+            "krw": balance,
+            "available": max(balance - locked, 0),
+            "mode": "live"
+        }
+        
+    except Exception as e:
+        return {"error": str(e), "mode": "error"}
+    
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0
@@ -100,13 +216,18 @@ async def process_trade(data):
 
 async def execute_signal(side: str, price: float, algo: str):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # 주문 실행
+    order_result = place_order(side, price)
+    
     trade = {
         "time": now,
         "market": MARKET,
         "side": side,
         "price": price,
         "algo": algo,
-        "paper": PAPER_TRADING
+        "paper": PAPER_TRADING,
+        "order_result": str(order_result)
     }
     trade_history.append(trade)
     active_positions[MARKET] = trade
@@ -128,12 +249,7 @@ async def bithumb_websocket():
     
     while True:
         try:
-            async with websockets.connect(
-                uri,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5
-            ) as ws:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=5) as ws:
                 await ws.send(subscribe)
                 ws_connected = True
                 print(f"WebSocket 연결됨: {MARKET}")
@@ -149,7 +265,6 @@ async def bithumb_websocket():
         except Exception as e:
             ws_connected = False
             print(f"WebSocket 오류: {e}")
-            send_telegram(f"⚠️ WebSocket 재연결 중... ({e})")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 1.5, 60)
 
@@ -157,7 +272,7 @@ async def watchdog():
     while True:
         await asyncio.sleep(30)
         if ws_connected and (datetime.now() - last_message_time).seconds > 90:
-            print("90초간 데이터 없음 - 연결 상태 확인 필요")
+            print("90초간 데이터 없음")
             send_telegram("⚠️ 90초간 체결 데이터 없음")
 
 @app.on_event("startup")
@@ -168,6 +283,7 @@ async def startup():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    balance = get_balance()
     return templates.TemplateResponse("index.html", {
         "request": request,
         "algorithms": ALGORITHMS,
@@ -176,7 +292,8 @@ async def index(request: Request):
         "paper": PAPER_TRADING,
         "positions": active_positions,
         "history": trade_history[-20:][::-1],
-        "ws_connected": ws_connected
+        "ws_connected": ws_connected,
+        "balance": balance
     })
 
 @app.post("/toggle_algo")
@@ -195,8 +312,7 @@ async def status():
         "paper_trading": PAPER_TRADING,
         "ws_connected": ws_connected,
         "enabled_algorithms": enabled_algos,
-        "active_positions": active_positions,
-        "last_message": last_message_time.isoformat()
+        "active_positions": active_positions
     }
 
 @app.get("/history", response_class=HTMLResponse)

@@ -8,14 +8,21 @@
         .container { max-width: 1000px; margin: auto; }
         .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h1, h2 { color: #333; }
-        .algo { border-bottom: 1px solid #eee; padding: 10px 0; }
-        .status { padding: 5px 10px; border-radius: 4px; color: white; }
+        .algo { border: 1px solid #eee; border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+        .algo-header { padding: 12px 15px; background: #fafafa; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .algo-header:hover { background: #f0f0f0; }
+        .algo-body { padding: 0 15px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease, padding 0.3s ease; }
+        .algo-body.open { max-height: 300px; padding: 15px; }
+        .status { padding: 5px 10px; border-radius: 4px; color: white; font-size: 0.9em; }
         .paper { background: #f39c12; }
         .live { background: #e74c3c; }
+        .monitoring { background: #27ae60; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
         nav a { margin-right: 15px; text-decoration: none; color: #3498db; }
-        button { padding: 8px 16px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .backtest { background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 8px; font-size: 0.9em; }
+        .toggle-icon { font-size: 0.8em; color: #666; }
     </style>
 </head>
 <body>
@@ -25,9 +32,11 @@
             <a href="/history">히스토리</a>
         </nav>
         <h1>Bithumb 스캘핑 봇</h1>
+
         <div class="card">
             <span class="status {{ 'paper' if paper else 'live' }}">{{ '페이퍼 트레이딩' if paper else '실거래 모드' }}</span>
-            <strong>마켓: {{ market }}</strong>
+            <strong style="margin-left:10px;">마켓: {{ market }}</strong>
+            <span class="status monitoring" style="margin-left:15px;">● 실시간 모니터링 중</span>
             <span style="margin-left:15px; color: {{ 'green' if ws_connected else 'red' }};">
                 WebSocket: {{ '연결됨' if ws_connected else '연결 끊김' }}
             </span>
@@ -37,28 +46,70 @@
             <h2>사용 가능한 알고리즘</h2>
             {% for id, algo in algorithms.items() %}
             <div class="algo">
-                <label>
-                    <input type="checkbox" 
-                           onchange="toggleAlgo('{{ id }}', this.checked)"
-                           {% if algo.enabled %}checked{% endif %}>
-                    <strong>{{ algo.name }}</strong>
-                </label>
-                <p>{{ algo.description }}</p>
+                <div class="algo-header" onclick="toggleCard(this)">
+                    <div>
+                        <label onclick="event.stopPropagation()">
+                            <input type="checkbox" 
+                                   onchange="toggleAlgo('{{ id }}', this.checked)"
+                                   {% if algo.enabled %}checked{% endif %}>
+                            <strong>{{ algo.name }}</strong>
+                        </label>
+                    </div>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="algo-body">
+                    <p>{{ algo.description }}</p>
+                    {% if algo.backtest %}
+                    <div class="backtest">
+                        <strong>백테스트 결과 (KRW-SOL)</strong><br>
+                        수익률: <span style="color:#27ae60;">{{ algo.backtest.return }}</span> | 
+                        승률: {{ algo.backtest.win_rate }} | 
+                        거래수: {{ algo.backtest.trades }}<br>
+                        <small style="color:#666;">{{ algo.backtest.note }}</small>
+                    </div>
+                    {% endif %}
+                </div>
             </div>
             {% endfor %}
         </div>
 
         <div class="card">
             <h2>실거래 모니터링</h2>
-            <p>활성화된 알고리즘: {{ enabled | join(', ') or '없음' }}</p>
+            
+            <!-- 동작 상태 표시 -->
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+                <span class="status monitoring" style="font-size:1em; padding:6px 12px;">
+                    ● 실시간 감시 중
+                </span>
+                <span id="last-update" style="color:#666; font-size:0.9em;">
+                    마지막 체결 수신: 확인 중...
+                </span>
+            </div>
+
+            <p id="monitor-status">
+                적용 알고리즘: <strong>{{ enabled | join(', ') or '없음' }}</strong>
+            </p>
+            
+            <div style="background:#f8f9fa; padding:12px; border-radius:6px; margin:10px 0;">
+                <strong>계좌 잔고</strong><br>
+                {% if balance.mode == 'paper' %}
+                    <span style="color:#f39c12;">페이퍼 모드 (실제 잔고 미조회)</span>
+                {% elif balance.error %}
+                    <span style="color:#e74c3c;">잔고 조회 실패: {{ balance.error }}</span>
+                {% else %}
+                    사용 가능 KRW: <strong style="color:#27ae60;">{{ "{:,.0f}".format(balance.available) }}원</strong><br>
+                    <small>총 보유: {{ "{:,.0f}".format(balance.krw) }}원</small>
+                {% endif %}
+            </div>
+
             <div id="monitor">
                 <h3>현재 포지션</h3>
                 {% if positions %}
                     {% for m, pos in positions.items() %}
-                    <p>{{ m }}: {{ pos.side }} @ {{ pos.price }} ({{ pos.algo }})</p>
+                    <p>{{ m }}: {{ pos.side }} @ {{ "{:,.0f}".format(pos.price) }}원 ({{ pos.algo }})</p>
                     {% endfor %}
                 {% else %}
-                    <p>보유 포지션 없음</p>
+                    <p style="color:#999;">보유 포지션 없음 — 시그널 대기 중</p>
                 {% endif %}
             </div>
         </div>
@@ -75,19 +126,63 @@
                     <td>{{ t.price }}</td>
                     <td>{{ t.algo }}</td>
                 </tr>
+                {% else %}
+                <tr><td colspan="5">거래 내역이 없습니다.</td></tr>
                 {% endfor %}
             </table>
         </div>
     </div>
 
     <script>
-        async function toggleAlgo(id, enabled) {
-            const form = new FormData();
-            form.append('algo_id', id);
-            form.append('enabled', enabled);
-            await fetch('/toggle_algo', { method: 'POST', body: form });
-            location.reload();
+    function toggleCard(header) {
+        const body = header.nextElementSibling;
+        const icon = header.querySelector('.toggle-icon');
+        body.classList.toggle('open');
+        icon.textContent = body.classList.contains('open') ? '▲' : '▼';
+    }
+
+    async function toggleAlgo(id, enabled) {
+        const form = new FormData();
+        form.append('algo_id', id);
+        form.append('enabled', enabled);
+        await fetch('/toggle_algo', { method: 'POST', body: form });
+        updateMonitoringDisplay();
+    }
+
+    function updateMonitoringDisplay() {
+        const checkboxes = document.querySelectorAll('.algo input[type="checkbox"]');
+        const enabled = [];
+        checkboxes.forEach(cb => {
+            if (cb.checked) {
+                const name = cb.closest('.algo-header').querySelector('strong').textContent;
+                enabled.push(name);
+            }
+        });
+
+        const monitorText = document.querySelector('#monitor-status');
+        if (monitorText) {
+            if (enabled.length === 0) {
+                monitorText.innerHTML = '적용 알고리즘: <strong style="color:#e74c3c;">없음 (모니터링 중지)</strong>';
+            } else {
+                monitorText.innerHTML = `적용 알고리즘: <strong>${enabled.join(', ')}</strong>`;
+            }
         }
-    </script>
+    }
+
+    function updateLastCheck() {
+        const el = document.getElementById('last-update');
+        if (el) {
+            const now = new Date();
+            el.textContent = `화면 갱신: ${now.toLocaleTimeString()}`;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        updateMonitoringDisplay();
+        updateLastCheck();
+        setInterval(updateLastCheck, 10000);
+    });
+</script>
+
 </body>
 </html>

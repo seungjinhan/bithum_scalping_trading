@@ -1,0 +1,20 @@
+[project]
+name = "bithum-scalping-trading"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jimmy", email = "hanblues@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pyjwt>=2.15.1",
+    "python-multipart>=0.0.34",
+]
+
+[project.scripts]
+bithum-scalping-trading = "bithum_scalping_trading:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
